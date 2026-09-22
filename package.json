@@ -1,6 +1,6 @@
 {
   "name": "@profullstack/watchdog",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Notice when a dependency has stopped answering the client your process uses, and restart instead of hanging. Probes the SHARED pool or connection, races the timeout so a promise that never settles is caught, and exits after N consecutive failures. Zero dependencies.",
   "keywords": [

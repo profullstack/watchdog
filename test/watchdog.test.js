@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { startWatchdog, startWatchdogs } from '../src/watchdog.js';
+import { startWatchdog, startWatchdogs, watchDependencies } from '../src/watchdog.js';
 
 /** Swallow the watchdog's own logging so a passing run stays readable. */
 const quiet = { error() {}, warn() {} };
@@ -217,5 +217,102 @@ describe('a group of watchdogs', () => {
 
   it('refuses anything that is not an array of specs', () => {
     expect(() => startWatchdogs({})).toThrow(/array/);
+  });
+});
+
+describe('watchDependencies', () => {
+  const env = {};
+
+  it('watches both, and gives redis more rope than the pool', () => {
+    const g = watchDependencies({
+      postgres: async () => true,
+      redis: async () => 'PONG',
+      env,
+      shared: { log: quiet, intervalMs: 60_000 },
+    });
+    expect(g.watchdogs.map((w) => w.subject)).toEqual(['the database pool', 'redis']);
+    g.stop();
+  });
+
+  it('counts a falsy healthcheck as a failure, not as health', async () => {
+    // The probe contract is "resolve truthy". A healthcheck that answers `false`
+    // is the pool saying no, and reading that as fine is how the outage hides.
+    const reasons = [];
+    const g = watchDependencies({
+      postgres: async () => false,
+      env,
+      shared: {
+        log: quiet,
+        intervalMs: 60_000,
+        timeoutMs: 50,
+        failures: 1,
+        onGiveUp: (r) => reasons.push(r),
+      },
+    });
+    await g.check();
+    expect(reasons).toHaveLength(1);
+    expect(reasons[0]).toContain('the database pool');
+    g.stop();
+  });
+
+  it('counts anything but PONG as a failure', async () => {
+    const reasons = [];
+    const g = watchDependencies({
+      redis: async () => 'LOADING Redis is loading the dataset in memory',
+      env,
+      shared: {
+        log: quiet,
+        intervalMs: 60_000,
+        timeoutMs: 50,
+        failures: 1,
+        onGiveUp: (r) => reasons.push(r),
+      },
+    });
+    await g.check();
+    expect(reasons).toHaveLength(1);
+    expect(reasons[0]).toContain('redis');
+    g.stop();
+  });
+
+  it('catches a ping that is queued forever rather than rejected', async () => {
+    /*
+     * The case this whole package exists for. ioredis with
+     * `maxRetriesPerRequest: null`, which BullMQ requires, queues a command
+     * while disconnected instead of rejecting it, so a probe that only caught
+     * rejections would sit here for the entire outage.
+     */
+    const reasons = [];
+    const g = watchDependencies({
+      redis: () => new Promise(() => {}),
+      env,
+      shared: {
+        log: quiet,
+        intervalMs: 60_000,
+        timeoutMs: 5,
+        failures: 1,
+        onGiveUp: (r) => reasons.push(r),
+      },
+    });
+    await g.check();
+    expect(reasons).toHaveLength(1);
+    g.stop();
+  });
+
+  it('reads the knobs from env, and ignores junk', () => {
+    const g = watchDependencies({
+      postgres: async () => true,
+      env: { DB_WATCHDOG_FAILURES: 'not a number', DB_WATCHDOG_INTERVAL_MS: '0' },
+      shared: { log: quiet },
+    });
+    // A typo in a variable must not silently disable the watchdog or spin it at
+    // zero milliseconds; both fall back to the default.
+    expect(g.watchdogs).toHaveLength(1);
+    g.stop();
+  });
+
+  it('watches nothing when given nothing, without throwing', () => {
+    const g = watchDependencies({ env, shared: { log: quiet } });
+    expect(g.watchdogs).toEqual([]);
+    g.stop();
   });
 });

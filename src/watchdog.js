@@ -177,3 +177,80 @@ export function startWatchdogs(specs, shared = {}) {
     },
   };
 }
+
+/**
+ * The pair almost every one of our services needs, with the tuning already
+ * argued out.
+ *
+ * Wiring two watchdogs by hand is forty lines, and it was about to be the same
+ * forty lines in three repositories. Worse, the interesting part is not the code
+ * but the reasoning behind the numbers, and a comment explaining why Redis gets
+ * more rope than the pool is worth nothing if it only exists in one of the three
+ * copies.
+ *
+ * Pass the probes, not the clients: this package stays zero-dependency and never
+ * needs to know whether you are on `bun:sql`, `pg` or `ioredis`. Omit one and it
+ * is simply not watched.
+ *
+ * ```js
+ * const watchdogs = watchDependencies({
+ *   postgres: () => healthcheck(),        // truthy, or it counts as a failure
+ *   redis: () => connection.ping(),       // must answer PONG
+ * });
+ * ```
+ *
+ * @param {object} o
+ * @param {(() => Promise<unknown>)} [o.postgres] resolves truthy when the pool is well
+ * @param {(() => Promise<string>)} [o.redis] resolves 'PONG' when the client is well
+ * @param {Record<string, string|undefined>} [o.env] where the knobs are read from
+ * @param {Partial<WatchdogOptions>} [o.shared] applied OVER both. Anything you
+ *   name here wins, including the timings: an explicit option in code is more
+ *   specific than an environment default, and a `shared` that could not override
+ *   the numbers would be a silent no-op for the caller who reached for it.
+ *   Naming `failures` here flattens the extra rope Redis gets below, which is
+ *   the point of saying it.
+ * @returns {ReturnType<typeof startWatchdogs>}
+ */
+export function watchDependencies({ postgres, redis, env = process.env, shared = {} } = {}) {
+  const num = (name, fallback) => {
+    const raw = Number(env[name]);
+    return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+  };
+  const specs = [];
+
+  if (postgres) {
+    specs.push({
+      subject: 'the database pool',
+      probe: async () => {
+        if (!(await postgres())) throw new Error('the healthcheck did not come back');
+      },
+      intervalMs: num('DB_WATCHDOG_INTERVAL_MS', DEFAULT_INTERVAL_MS),
+      timeoutMs: num('DB_WATCHDOG_TIMEOUT_MS', DEFAULT_TIMEOUT_MS),
+      failures: num('DB_WATCHDOG_FAILURES', DEFAULT_FAILURES),
+    });
+  }
+
+  if (redis) {
+    specs.push({
+      subject: 'redis',
+      probe: async () => {
+        if ((await redis()) !== 'PONG') throw new Error('PING did not come back');
+      },
+      intervalMs: num('REDIS_WATCHDOG_INTERVAL_MS', DEFAULT_INTERVAL_MS),
+      timeoutMs: num('REDIS_WATCHDOG_TIMEOUT_MS', DEFAULT_TIMEOUT_MS),
+      /*
+       * One more failure than the pool gets. A healthy Redis is routinely
+       * unreachable for a while, because it restarts by reading its snapshot off
+       * a volume before it accepts anything: 26 seconds for a 1.8GB RDB, and 124
+       * for the 8.65GB one that caused the outage this was written for. Four
+       * 30-second probes puts the floor around two minutes, which a normal
+       * restart stays well under. Tripping early is worse than not watching at
+       * all, because a service whose boot refuses to start without Redis turns
+       * one Redis deploy into a deploy loop of its own.
+       */
+      failures: num('REDIS_WATCHDOG_FAILURES', DEFAULT_FAILURES + 1),
+    });
+  }
+
+  return startWatchdogs(specs.map((spec) => ({ ...spec, ...shared })));
+}

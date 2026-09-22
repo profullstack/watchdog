@@ -50,6 +50,34 @@ case it exists for.
 
 ## Use
 
+Most services want the same two, so there is one call for it:
+
+```js
+import { watchDependencies } from '@profullstack/watchdog';
+
+const watchdogs = watchDependencies({
+  postgres: () => healthcheck(),   // resolve truthy, or it counts as a failure
+  redis: () => connection.ping(),  // must answer PONG
+});
+
+process.on('SIGTERM', async () => {
+  watchdogs.stop(); // FIRST, or a clean drain looks like a wedge
+  await drain();
+});
+```
+
+That reads `DB_WATCHDOG_INTERVAL_MS`, `DB_WATCHDOG_TIMEOUT_MS`,
+`DB_WATCHDOG_FAILURES` and the `REDIS_WATCHDOG_*` equivalents, all with working
+defaults, so a service needs no new variables. Redis is allowed one more failure
+than the pool, because a healthy Redis is routinely unreachable for a minute or
+two while it reloads its snapshot from disk, and a watchdog that trips during a
+normal restart is worse than no watchdog at all.
+
+Pass the probes rather than the clients: this package stays zero-dependency and
+never needs to know whether you are on `bun:sql`, `pg` or `ioredis`.
+
+### Anything else
+
 ```js
 import { startWatchdogs } from '@profullstack/watchdog';
 

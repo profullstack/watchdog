@@ -42,3 +42,25 @@ export declare function startWatchdogs(
   specs: WatchdogOptions[],
   shared?: Partial<WatchdogOptions>,
 ): WatchdogGroup;
+
+export interface WatchDependenciesOptions {
+  /** Resolves truthy when the pool is well. Usually your existing `healthcheck()`. */
+  postgres?: () => Promise<unknown>;
+  /** Resolves 'PONG' when the client is well. Usually `connection.ping()`. */
+  redis?: () => Promise<string>;
+  /** Where the knobs are read from. Defaults to `process.env`. */
+  env?: Record<string, string | undefined>;
+  /**
+   * Applied OVER both specs, so anything named here wins, including the
+   * timings. Naming `failures` flattens the extra rope Redis gets by default.
+   */
+  shared?: Partial<WatchdogOptions>;
+}
+
+/**
+ * The pair almost every service needs, with the tuning already argued out:
+ * `DB_WATCHDOG_*` and `REDIS_WATCHDOG_*` knobs, and one more permitted failure
+ * for Redis because a healthy Redis is routinely unreachable while it reloads
+ * its snapshot. Omit either probe and it is simply not watched.
+ */
+export declare function watchDependencies(options?: WatchDependenciesOptions): WatchdogGroup;
