@@ -1,0 +1,62 @@
+{
+  "name": "@profullstack/watchdog",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Notice when a dependency has stopped answering the client your process uses, and restart instead of hanging. Probes the SHARED pool or connection, races the timeout so a promise that never settles is caught, and exits after N consecutive failures. Zero dependencies.",
+  "keywords": [
+    "watchdog",
+    "healthcheck",
+    "liveness",
+    "postgres",
+    "redis",
+    "ioredis",
+    "bullmq",
+    "connection-pool",
+    "outage",
+    "reliability",
+    "sre",
+    "railway",
+    "restart",
+    "hang",
+    "deadlock"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/profullstack/watchdog.git"
+  },
+  "homepage": "https://github.com/profullstack/watchdog#readme",
+  "bugs": {
+    "url": "https://github.com/profullstack/watchdog/issues"
+  },
+  "license": "MIT",
+  "author": "Profullstack, Inc.",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./src/watchdog.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "types": "./index.d.ts",
+  "files": [
+    "src",
+    "index.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "lint": "bun run --bun biome check .",
+    "format": "bun run --bun biome format --write ."
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.0"
+  }
+}
