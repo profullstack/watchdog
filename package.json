@@ -1,8 +1,8 @@
 {
   "name": "@profullstack/watchdog",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
-  "description": "Notice when a dependency has stopped answering the client your process uses, and restart instead of hanging. Probes the SHARED pool or connection, races the timeout so a promise that never settles is caught, and exits after N consecutive failures. Zero dependencies.",
+  "description": "Notice when a dependency has stopped answering the client your process uses, and restart instead of hanging. Probes the SHARED pool or connection, races the timeout so a promise that never settles is caught, and exits after N consecutive failures. Also ships watchdog-autoheal, which restarts the containers Docker has marked unhealthy, within a per-container restart budget. Zero dependencies.",
   "keywords": [
     "watchdog",
     "healthcheck",
@@ -18,7 +18,11 @@
     "railway",
     "restart",
     "hang",
-    "deadlock"
+    "deadlock",
+    "docker",
+    "autoheal",
+    "unhealthy",
+    "event-loop"
   ],
   "repository": {
     "type": "git",
@@ -36,12 +40,21 @@
       "types": "./index.d.ts",
       "default": "./src/watchdog.js"
     },
+    "./autoheal": {
+      "types": "./autoheal.d.ts",
+      "default": "./src/autoheal.js"
+    },
     "./package.json": "./package.json"
   },
   "types": "./index.d.ts",
+  "bin": {
+    "watchdog-autoheal": "bin/watchdog-autoheal.js"
+  },
   "files": [
     "src",
+    "bin",
     "index.d.ts",
+    "autoheal.d.ts",
     "README.md",
     "LICENSE"
   ],
