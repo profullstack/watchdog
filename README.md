@@ -139,6 +139,66 @@ Hanging forever is not the safer option. It is the outage.
 Note that a platform health check usually gates a new deploy and is never re-run,
 so nothing else is going to restart a wedged-but-alive container.
 
+## watchdog-autoheal: when the process cannot restart itself
+
+The watchdog above runs on a timer inside your process. If the event loop itself
+is blocked, a synchronous loop or a regex gone exponential, that timer never
+fires either. Only something outside the process can see that.
+
+Docker already is that something. A `HEALTHCHECK` fails, Docker counts the
+failures, marks the container `unhealthy`, and then **does nothing**. A restart
+policy only fires when the process exits, and a wedged process has not exited.
+On our production box that was 183 health-checked containers with nothing acting
+on the verdict.
+
+`watchdog-autoheal` reads Docker's verdict and acts on it:
+
+```sh
+npm install -g @profullstack/watchdog
+
+watchdog-autoheal status     # healthy, unhealthy, and which containers have no healthcheck
+watchdog-autoheal --dry-run  # what one pass would restart
+watchdog-autoheal            # one pass: restart what Docker marked unhealthy
+```
+
+Run it every minute from cron, under `flock` so passes never overlap:
+
+```cron
+* * * * * flock -n ~/.local/state/autoheal.lock watchdog-autoheal --notify 'mail -s autoheal you@example.com' >> ~/.local/state/autoheal.log 2>&1
+```
+
+or loop it under a service manager with `watchdog-autoheal watch --interval 30`.
+
+It does two things on purpose:
+
+- **It trusts Docker's streak.** `unhealthy` already means `retries`
+  consecutive failures after `start_period`. Adding a streak of its own would
+  only add minutes to every real wedge.
+- **Restarts are budgeted.** A container that is unhealthy because its database
+  is down, or because the image is broken, comes back unhealthy. After
+  `--max-restarts` (3) inside `--window` minutes (60) it stops restarting that
+  container and reports it once, through `--notify`, as needing a person.
+
+Opt a container out with the label `autoheal=false`. `status --json` and
+`--json` give machine-readable output.
+
+The policy is a library too, so it can sit behind another runtime or an admin
+route:
+
+```js
+import { healOnce, listDockerContainers, restartDockerContainer } from '@profullstack/watchdog/autoheal';
+
+const { state, restarted } = await healOnce({
+  list: () => listDockerContainers(),
+  restart: (c) => restartDockerContainer(c),
+  state: previousState,
+});
+```
+
+A container with no healthcheck is invisible to it, and `status` lists those.
+The healthcheck worth adding is one request to your own `/healthz`: if the event
+loop is blocked, that request times out, which is exactly the signal.
+
 ## Licence
 
 MIT
