@@ -6,6 +6,14 @@ restart instead of hanging.
 Zero dependencies. No build step. One module.
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/profullstack/watchdog/main/install.sh | sh
+```
+
+That installs the `watchdog-autoheal` command under `~/.local` (no root; it brings its
+own Node if yours is older than 20). Remove it with `sh ~/.local/share/watchdog/uninstall.sh`.
+For the library, add it to your project:
+
+```sh
 npm install @profullstack/watchdog
 ```
 
@@ -154,7 +162,7 @@ on the verdict.
 `watchdog-autoheal` reads Docker's verdict and acts on it:
 
 ```sh
-npm install -g @profullstack/watchdog
+curl -fsSL https://raw.githubusercontent.com/profullstack/watchdog/main/install.sh | sh
 
 watchdog-autoheal status     # healthy, unhealthy, and which containers have no healthcheck
 watchdog-autoheal --dry-run  # what one pass would restart
