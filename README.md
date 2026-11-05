@@ -177,7 +177,7 @@ Run it every minute from cron, under `flock` so passes never overlap:
 
 or loop it under a service manager with `watchdog-autoheal watch --interval 30`.
 
-It does two things on purpose:
+It does three things on purpose:
 
 - **It trusts Docker's streak.** `unhealthy` already means `retries`
   consecutive failures after `start_period`. Adding a streak of its own would
@@ -186,9 +186,24 @@ It does two things on purpose:
   is down, or because the image is broken, comes back unhealthy. After
   `--max-restarts` (3) inside `--window` minutes (60) it stops restarting that
   container and reports it once, through `--notify`, as needing a person.
+- **Many unhealthy at once is the host, so it restarts none of them.** At
+  `--max-simultaneous` (5) or more it holds off entirely and reports the set
+  once, pointing at the box rather than the containers.
 
-Opt a container out with the label `autoheal=false`. `status --json` and
-`--json` give machine-readable output.
+That last one is there because the per-container budget reasons about each
+container alone, so N containers failing for one shared reason each get their
+own N restarts. On our box the machine ran out of both swap devices and sat at
+74% iowait; dockerd stopped answering DNS on `127.0.0.11`, so the PostgREST
+container in all seven busy Supabase stacks could not resolve its `db` hostname
+and Docker marked every one of them unhealthy inside a minute. They earned 21
+restarts, every one of them useless, onto a box that was already starved — then
+seven separate emails naming seven containers that were never the problem. The
+restart budget is deliberately not spent while the brake is on, so once the box
+is well again anything still wedged on its own gets its full three tries.
+
+Opt a container out with the label `autoheal=false`; opted-out containers do not
+count towards that verdict either. `status --json` and `--json` give
+machine-readable output.
 
 The policy is a library too, so it can sit behind another runtime or an admin
 route:

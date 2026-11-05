@@ -10,11 +10,14 @@
  *   --dry-run              say what would be restarted, restart nothing
  *   --json                 machine-readable output (status and run)
  *   --max-restarts N       per container per window before handing to a person (3)
+ *   --max-simultaneous N   unhealthy at once that means the host, not the
+ *                          containers: restart none of them, report once (5)
  *   --window MINUTES       the restart budget window (60)
  *   --interval SECONDS     gap between passes in watch mode (30)
  *   --state PATH           where the restart budget is kept between passes
  *   --notify CMD           run CMD (via sh) with the message on stdin when a
- *                          container exhausts its budget, e.g. a mail command
+ *                          container exhausts its budget, or when many are
+ *                          unhealthy at once, e.g. a mail command
  *
  * Opt a container out with the label autoheal=false.
  */
@@ -25,6 +28,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
   DEFAULT_MAX_RESTARTS,
+  DEFAULT_MAX_SIMULTANEOUS,
   DEFAULT_WINDOW_MS,
   healOnce,
   listDockerContainers,
@@ -64,6 +68,7 @@ const command = argv[0] && !argv[0].startsWith('--') ? argv[0] : 'run';
 const json = flag('json');
 const dryRun = flag('dry-run');
 const maxRestarts = num('max-restarts', DEFAULT_MAX_RESTARTS);
+const maxSimultaneous = num('max-simultaneous', DEFAULT_MAX_SIMULTANEOUS);
 const windowMs = num('window', DEFAULT_WINDOW_MS / 60000) * 60000;
 const intervalMs = num('interval', 30) * 1000;
 const notify = opt('notify');
@@ -117,11 +122,27 @@ async function pass() {
     restart: (c) => restartDockerContainer(c),
     state: readState(),
     maxRestarts,
+    maxSimultaneous,
     windowMs,
     dryRun,
     log,
   });
   if (!dryRun) writeState(result.state);
+  if (notify && result.braked.length) {
+    const [first] = result.braked;
+    await runNotify(
+      `watchdog-autoheal restarted nothing: ${result.braked.length} containers are unhealthy ` +
+        `at once (${result.braked.join(', ')}). That many failing together is the host or a ` +
+        `shared dependency, not ${result.braked.length} container faults, so restarting them ` +
+        `cannot help.\n\nCheck the host before the containers:\n` +
+        `  uptime; vmstat 1 5        load and iowait\n` +
+        `  free -g; swapon --show    memory, and whether swap is exhausted\n` +
+        `  docker exec ${first} getent hosts db    Docker's embedded DNS at 127.0.0.11\n` +
+        `  docker logs --tail 200 ${first}\n\n` +
+        `A starved box stops answering DNS on 127.0.0.11, which fails every container that ` +
+        `resolves a hostname to reach its database, all at the same moment.\n`,
+    );
+  }
   if (notify && result.gaveUp.length) {
     await runNotify(
       `watchdog-autoheal gave up on ${result.gaveUp.join(', ')}: still unhealthy after ` +
@@ -154,12 +175,20 @@ async function status() {
       .sort(),
     restartsThisWindow: state.restarts ?? {},
     gaveUp: Object.keys(state.gaveUp ?? {}),
+    // Set while autoheal is holding off because the whole box looks sick.
+    brakedAt: state.brakedAt ? new Date(state.brakedAt).toISOString() : null,
   };
   if (json) return console.log(JSON.stringify(report, null, 2));
   console.log(
     `${report.total} running: ${report.healthy} healthy, ${report.unhealthy.length} unhealthy, ` +
       `${report.starting.length} starting, ${report.noHealthcheck.length} with no healthcheck`,
   );
+  if (report.unhealthy.length >= maxSimultaneous) {
+    console.log(
+      `\nrestarting nothing: ${report.unhealthy.length} unhealthy at once is the host or a ` +
+        `shared dependency (--max-simultaneous ${maxSimultaneous})`,
+    );
+  }
   for (const [label, names] of [
     ['unhealthy', report.unhealthy],
     ['given up on', report.gaveUp],
