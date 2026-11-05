@@ -26,6 +26,22 @@
  * the box. After `maxRestarts` inside `windowMs` it stops restarting that
  * container and reports it once as needing a person.
  *
+ * And one thing keeps it from mistaking a sick box for sick containers.
+ *
+ * **Many containers unhealthy at once is a host fault, so it restarts none of
+ * them.** The per-container budget is the wrong instrument there: it reasons
+ * about each container alone, so N unrelated containers each get their own N
+ * restarts. On dev2 on 2026-11-05 the box ran out of both swap devices and sat
+ * at 74% iowait; dockerd's embedded DNS at 127.0.0.11 stopped answering, so the
+ * PostgREST container in all seven busy Supabase stacks could not resolve its
+ * `db` hostname and Docker marked every one of them unhealthy within a minute.
+ * Each was restarted three times — 21 restarts, all of them useless, onto a box
+ * that was already starved — before the budget ran out and seven separate
+ * emails went out naming seven containers that were never the problem. When
+ * `maxSimultaneous` or more are unhealthy in one pass, that is the shape of a
+ * shared dependency or the host itself, and no restart can fix it: this
+ * restarts nothing and reports the set once, pointing at the host.
+ *
  * Opt out per container with the label `autoheal=false`.
  */
 
@@ -35,6 +51,12 @@ import { execFile } from 'node:child_process';
 export const DEFAULT_MAX_RESTARTS = 3;
 /** The budget window. */
 export const DEFAULT_WINDOW_MS = 60 * 60 * 1000;
+/**
+ * Unhealthy containers in one pass that mean "the host", not "the containers".
+ * A single app's stack going down takes two or three with it (web, rest, db),
+ * so the brake has to sit above that to stay useful.
+ */
+export const DEFAULT_MAX_SIMULTANEOUS = 5;
 
 /**
  * @typedef {object} Container
@@ -48,6 +70,7 @@ export const DEFAULT_WINDOW_MS = 60 * 60 * 1000;
  * @typedef {object} HealState
  * @property {Record<string, number[]>} restarts restart timestamps per container name
  * @property {Record<string, number>} gaveUp when each exhausted container was reported
+ * @property {number} [brakedAt] when the current correlated failure was reported
  */
 
 /**
@@ -60,10 +83,11 @@ export const DEFAULT_WINDOW_MS = 60 * 60 * 1000;
  * @param {HealState} [o.state] carried between passes; returned updated
  * @param {number} [o.now]
  * @param {number} [o.maxRestarts]
+ * @param {number} [o.maxSimultaneous]
  * @param {number} [o.windowMs]
  * @param {boolean} [o.dryRun]
  * @param {{error: Function, warn: Function, info?: Function}} [o.log]
- * @returns {Promise<{state: HealState, restarted: string[], gaveUp: string[], failed: string[], containers: Container[]}>}
+ * @returns {Promise<{state: HealState, restarted: string[], gaveUp: string[], braked: string[], failed: string[], containers: Container[]}>}
  */
 export async function healOnce({
   list,
@@ -71,6 +95,7 @@ export async function healOnce({
   state = { restarts: {}, gaveUp: {} },
   now = Date.now(),
   maxRestarts = DEFAULT_MAX_RESTARTS,
+  maxSimultaneous = DEFAULT_MAX_SIMULTANEOUS,
   windowMs = DEFAULT_WINDOW_MS,
   dryRun = false,
   log = console,
@@ -79,6 +104,7 @@ export async function healOnce({
   const next = { restarts: {}, gaveUp: {} };
   const restarted = [];
   const gaveUp = [];
+  const braked = [];
   const failed = [];
 
   // Forget restarts that have aged out of the window, and containers that no
@@ -93,6 +119,28 @@ export async function healOnce({
     // budget; once it recovers or the window passes it may be reported again.
     if (live.has(name) && now - at < windowMs) next.gaveUp[name] = at;
   }
+  if (state.brakedAt && now - state.brakedAt < windowMs) next.brakedAt = state.brakedAt;
+
+  // Many at once is the host, not the containers. Decided before any restart,
+  // because the whole point is that none of them should be restarted.
+  const unhealthy = containers.filter((c) => c.health === 'unhealthy' && !c.optedOut);
+  if (unhealthy.length >= maxSimultaneous) {
+    const names = unhealthy.map((c) => c.name).sort();
+    if (!next.brakedAt) {
+      next.brakedAt = now;
+      braked.push(...names);
+      log.error?.(
+        `[autoheal] restarting nothing: ${names.length} containers are unhealthy at once ` +
+          `(${names.join(', ')}). That many failing together is the host or a shared ` +
+          `dependency, not ${names.length} container faults, so a restart cannot fix it. ` +
+          `It needs a person.`,
+      );
+    }
+    // The restart budget is deliberately left untouched: once the box is well
+    // again, anything still wedged on its own deserves its full three tries.
+    return { state: next, restarted, gaveUp, braked, failed, containers };
+  }
+  delete next.brakedAt;
 
   for (const c of containers) {
     if (c.health !== 'unhealthy') {
@@ -134,7 +182,7 @@ export async function healOnce({
     }
   }
 
-  return { state: next, restarted, gaveUp, failed, containers };
+  return { state: next, restarted, gaveUp, braked, failed, containers };
 }
 
 /** Run a docker command and resolve its stdout. */

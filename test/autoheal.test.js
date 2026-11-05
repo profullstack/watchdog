@@ -94,3 +94,81 @@ describe('healOnce', () => {
     expect(r.state.restarts).toEqual({});
   });
 });
+
+describe('healOnce, many unhealthy at once', () => {
+  const seven = () =>
+    fakeDocker([
+      c('qaaas-dev-supabase-rest', 'unhealthy'),
+      c('c0ncerts-com-supabase-rest', 'unhealthy'),
+      c('saasrow-com-supabase-rest', 'unhealthy'),
+      c('brisk-news-supabase-rest', 'unhealthy'),
+      c('weedforcrypto-com-supabase-rest', 'unhealthy'),
+      c('postammo-com-supabase-rest', 'unhealthy'),
+      c('icemap-app-supabase-rest', 'unhealthy'),
+      c('fine', 'healthy'),
+    ]);
+
+  it('restarts none of them, and names the whole set', async () => {
+    // dev2, 2026-11-05: the box ran out of both swap devices, dockerd stopped
+    // answering DNS on 127.0.0.11, and every PostgREST lost its `db` hostname
+    // at once. The old policy spent 21 restarts on containers that were fine.
+    const d = seven();
+    const r = await healOnce({ ...d, now: 1000, log: quiet });
+    expect(d.restarted).toEqual([]);
+    expect(r.restarted).toEqual([]);
+    expect(r.braked).toHaveLength(7);
+    expect(r.braked).toContain('icemap-app-supabase-rest');
+    expect(r.gaveUp).toEqual([]);
+  });
+
+  it('reports once while it lasts, not every minute', async () => {
+    const d = seven();
+    let state;
+    const braked = [];
+    for (let i = 0; i < 5; i++) {
+      const r = await healOnce({ ...d, state, now: 1000 + i * 60_000, log: quiet });
+      state = r.state;
+      braked.push(...r.braked);
+    }
+    expect(braked).toHaveLength(7);
+  });
+
+  it('leaves the restart budget alone, so one wedged container still gets its tries', async () => {
+    const d = seven();
+    const r = await healOnce({ ...d, now: 1000, log: quiet });
+    expect(r.state.restarts).toEqual({});
+  });
+
+  it('still restarts a handful, which is what a per-container budget is for', async () => {
+    const d = fakeDocker([c('a', 'unhealthy'), c('b', 'unhealthy'), c('c', 'unhealthy')]);
+    const r = await healOnce({ ...d, now: 1, maxSimultaneous: 5, log: quiet });
+    expect(d.restarted).toEqual(['a', 'b', 'c']);
+    expect(r.braked).toEqual([]);
+  });
+
+  it('lifts once the box is well, and reports a later event again', async () => {
+    const first = await healOnce({ ...seven(), now: 1000, log: quiet });
+    expect(first.braked).toHaveLength(7);
+
+    const recovered = fakeDocker([c('qaaas-dev-supabase-rest', 'healthy')]);
+    const clear = await healOnce({ ...recovered, state: first.state, now: 2000, log: quiet });
+    expect(clear.state.brakedAt).toBeUndefined();
+
+    const again = await healOnce({ ...seven(), state: clear.state, now: 3000, log: quiet });
+    expect(again.braked).toHaveLength(7);
+  });
+
+  it('does not count opted-out containers towards the host verdict', async () => {
+    const d = fakeDocker([
+      c('a', 'unhealthy'),
+      c('pet1', 'unhealthy', true),
+      c('pet2', 'unhealthy', true),
+      c('pet3', 'unhealthy', true),
+      c('pet4', 'unhealthy', true),
+      c('pet5', 'unhealthy', true),
+    ]);
+    const r = await healOnce({ ...d, now: 1, log: quiet });
+    expect(r.braked).toEqual([]);
+    expect(d.restarted).toEqual(['a']);
+  });
+});
